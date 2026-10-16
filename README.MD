@@ -213,13 +213,104 @@ Run both steps, in that order. Replacing the registry image removes the old imag
 | Symptom | Cause and fix |
 |--|--|
 | Task stops with `Exit code: 255`, or `exec format error` in the logs | The image architecture does not match the task (`arm64` image on `x86_64`). Keep the `amd64` settings in `src/Dockerfile` and redeploy as described above. |
-| `CannotPullContainerError ... not found` | ECS is asking for an image digest that was deleted from ECR. Run `aws ecs update-services --cluster<cluster_name> --services <service_name>  --force-new-deployment --region <region name>`. |
+| `CannotPullContainerError ... not found` | ECS is asking for an image digest that was deleted from ECR. Run `aws ecs update-service --cluster <cluster_name> --service <service_name>  --force-new-deployment --region <region name>`. |
 
 To read the container logs:
 
 ```bash
 aws logs tail /ecs/CS6650L2 --since 10m --region us-east-1
 ```
+
+## Load testing with Locust
+
+The load tests are in `test/`. They run against the deployed service, so deploy it first and look up the public IP (see above). The full analysis is in the [report](https://github.com/kulkarni-sharvari/NU-CS6650/blob/main/hw5/report.md#part-iv-testing).
+
+### Setup
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r test/requirements.txt
+```
+
+### Files
+
+| File | Contents |
+|--|--|
+| `test/locustfile.py` | The shared tasks (9 `GET` to 1 `POST`, product IDs 1 to 3) and the user classes `ProductHttpUser`, `ProductFastHttpUser` and `ProductStressUser` |
+| `test/shape_step.py` | The step load shape for the stress test (10, 25, 50, 100, 200 and 400 users, 90 s each) |
+| `test/shape_spike.py` | A spike load shape |
+
+### Running the tests
+
+Replace `<IP>` with the task's public IP and run each command from the repository root. Open `http://localhost:8089` and press **Start**.
+
+```bash
+# Test 1: baseline, 1 user (HttpUser, with a wait of 0.1 to 0.5 s between requests)
+# Tests 2 and 3: 50 users, spawn rate 10, with the same wait, using ProductHttpUser and ProductFastHttpUser
+locust -f test/locustfile.py --host http://<IP>:8080 ProductHttpUser
+
+# Tests 4 and 5: 200 users, spawn rate 20, no wait
+locust -f test/locustfile.py --host http://<IP>:8080 ProductHttpUser
+locust -f test/locustfile.py --host http://<IP>:8080 ProductFastHttpUser
+
+# Test 6: stress test, step load with 4 worker processes (the user count comes from the shape)
+locust -f test/locustfile.py,test/shape_step.py --host http://<IP>:8080 --processes 4 ProductStressUser
+```
+
+Tests 1 to 3 used a wait of 0.1 to 0.5 s between requests, and tests 4 to 6 used none. The user classes in `test/locustfile.py` have no wait time. To reproduce tests 1 to 3, add `wait_time = between(0.1, 0.5)` to the class (and `between` to the `locust` import). 
+
+### Results
+
+All tests finished with 0 failures.
+
+| Test | Setup | RPS | Median / 95th / 99th (ms) |
+|--|--|--|--|
+| 1 | `HttpUser`, 1 user | 3.2 | 22 / 27 / 73 |
+| 2 | `HttpUser`, 50 users | 154.2 | 23 / 73 / 150 |
+| 3 | `FastHttpUser`, 50 users | 154.3 | 21 / 26 / 28 |
+| 4 | `HttpUser`, 200 users, no wait | 3,757 | 37 / 80 / 93 |
+| 5 | `FastHttpUser`, 200 users, no wait | 3,963 | 38 / 91 / 120 |
+| 6 | Step load, 10 to 400 users | 4,457 overall (ceiling about 4,400) | 29 / 110 / 170 |
+
+**Findings.** The server handles about 3,400 requests per second comfortably (up to about 100 users) and levels off at about 4,400 requests per second. Beyond 100 users, extra users only increase latency (the median rises from 24 ms to 93 ms at 400 users) and do not add throughput. There were no errors. The task has 0.25 vCPU, and CloudWatch shows its CPU at about 90 % at the plateau, so the limit is CPU. See the [report](https://github.com/kulkarni-sharvari/NU-CS6650/blob/main/hw5/report.md#part-iv-testing) for the analysis, the `HttpUser` and `FastHttpUser` comparison, and the limitations.
+
+### Screenshots
+
+**Test 1: `HttpUser`, 1 user**
+
+![Test 1 statistics](./images/locust_test1_stats.png)
+![Test 1 charts](./images/locust_test1_charts.png)
+
+**Test 2: `HttpUser`, 50 users**
+
+![Test 2 statistics](./images/locust_test2_stats.png)
+![Test 2 charts](./images/locust_test2_charts.png)
+
+**Test 3: `FastHttpUser`, 50 users**
+
+![Test 3 statistics](./images/locust_test3_stats.png)
+![Test 3 charts](./images/locust_chart_test3.png)
+
+**Test 4: `HttpUser`, 200 users, no wait**
+
+![Test 4 statistics](./images/locust_test4_stats.png)
+![Test 4 charts](./images/locust_test4_charts.png)
+
+**Test 5: `FastHttpUser`, 200 users, no wait**
+
+![Test 5 statistics](./images/locust_test5_stats.png)
+![Test 5 charts](./images/locust_test5_charts.png)
+
+**CloudWatch CPU, tests 1 to 5**
+
+![CloudWatch CPU tests 1 to 5](./images/locust_test_cloudwatch_test1_5.png)
+
+**Test 6: stress test (step load)**
+
+![Test 6 statistics](./images/locust_test6_stats.png)
+![Test 6 charts](./images/locust_test6_chart.png)
+![CloudWatch CPU during test 6](./images/locust_test6_cloudwatch_precise.png)
 
 ## Clean up
 
