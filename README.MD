@@ -312,6 +312,94 @@ All tests finished with 0 failures.
 ![Test 6 charts](./images/locust_test6_chart.png)
 ![CloudWatch CPU during test 6](./images/locust_test6_cloudwatch_precise.png)
 
+## Part V: Observability — Know Your Vitals
+
+The server records the three RED signals for every endpoint, in two ways:
+
+* **Rate** (requests per second), **Errors** (the share of non-2xx responses) and **Duration** (latency, as p50 and p95) as **Prometheus metrics**, shown on a Grafana dashboard.
+* The same data as **one JSON log line per request** (endpoint, status code and duration), for debugging after the fact.
+
+The monitoring stack runs **locally** with Docker Compose, next to a local copy of the app. The code is in `src/observability.go`, and the full write-up is in the [report](https://github.com/kulkarni-sharvari/NU-CS6650/blob/main/hw5/report.md#part-v-observability-know-your-vitals).
+
+### The metrics
+
+| Metric | Type | Labels | Meaning |
+|--|--|--|--|
+| `http_requests_total` | counter | `method`, `route`, `code` | Every request handled (the rate) |
+| `http_request_errors_total` | counter | `method`, `route`, `code` | Requests that returned a non-2xx status |
+| `http_request_duration_seconds` | histogram | `method`, `route` | Time spent handling a request, in 20 buckets from 1 microsecond to 2.5 seconds |
+
+The `route` label is the route pattern (`/products/:productId`), not the real path, so there is one time series per endpoint and not one per product ID. A middleware (`observabilityMiddleware`) records all three metrics and writes the log line, so no handler has to. The metrics are served at `GET /metrics`, in Prometheus text format.
+
+### Run the stack
+
+```bash
+cd src
+docker compose up -d --build
+```
+
+| Service | URL | Notes |
+|--|--|--|
+| App | http://localhost:8080 | The Product API, with `/metrics` |
+| Prometheus | http://localhost:9090 | Scrapes `app:8080/metrics` every 5 seconds (`src/prometheus.yaml`). **Status, then Targets** should show the app as UP. |
+| Grafana | http://localhost:3000 | The Prometheus data source is provisioned from `src/grafana.yml`. |
+
+Stop it with `docker compose stop`.
+
+### The dashboard
+
+The data source is provisioned automatically, but the dashboard was created in the Grafana interface. The three panels with queries:
+
+| Panel | Query | Legend | Unit |
+|--|--|--|--|
+| Request rate | `sum by (route) (rate(http_requests_total[30s]))` | `{{route}}` | requests/sec |
+| Error rate | `100 * sum by (route) (rate(http_request_errors_total[30s])) / sum by (route) (rate(http_requests_total[30s]))` | `{{route}}` | percent (0-100) |
+| Latency | A: `histogram_quantile(0.50, sum by (le, route) (rate(http_request_duration_seconds_bucket[30s])))`<br>B: `histogram_quantile(0.95, sum by (le, route) (rate(http_request_duration_seconds_bucket[30s])))` | `p50 {{route}}`, `p95 {{route}}` | seconds |
+
+Counters only ever increase, so the panels use `rate()` to turn them into per-second values, and `histogram_quantile()` to turn the histogram buckets into percentiles.
+
+### Generate load
+
+The user class `ProductObservabilityUser` in `test/locustfile.py` sends 80 % `GET` of an existing product, 10 % valid `POST`, 8 % `GET` of a missing product (`404`) and 2 % `GET` with the test header `X-Force-Error: true` (`500`). The deliberate errors give the error panel and the logs something to show.
+
+```bash
+locust -f test/locustfile.py --host http://localhost:8080 \
+  --processes 2 -u 200 -r 20 -t 5m --autostart --autoquit 10 \
+  ProductObservabilityUser
+```
+
+The run shown below had about 5 minutes of idle time first, then 5 minutes of load, then idle again.
+
+### Dashboard during the run
+
+Idle, then about 1,430 requests per second on `/products/:productId` and 160 on `/details`, then idle again. Latency exists only while there is traffic: `GET` p50 is about 11 microseconds and `POST` about 42. The error rate is about 11 % on the `GET` route, which matches the 404 and 500 requests that were injected.
+
+![Request rate](./images/part5_dashboard_requests.png)
+![Latency and error rate](./images/part5_dashboard_error_latecy.png)
+
+### Structured logs
+
+Every request writes one JSON object to stdout. Read them with:
+
+```bash
+cd src
+docker compose logs app --no-log-prefix --since 15m | grep -m3 '"status":200'
+docker compose logs app --no-log-prefix --since 15m | grep -m3 '"level":"WARN"'
+docker compose logs app --no-log-prefix --since 15m | grep -m2 '"level":"ERROR"'
+```
+
+The level follows the status: `INFO` for 2xx, `WARN` for 4xx and `ERROR` for 5xx. An excerpt from the middle of the load run (also saved in [`logs/request-log-excerpt.jsonl`](./logs/request-log-excerpt.jsonl)):
+
+```json
+{"time":"2026-10-17T20:38:00.000495002Z","level":"INFO","msg":"request","method":"GET","endpoint":"/products/:productId","path":"/products/2","status":200,"duration_ms":0.014}
+{"time":"2026-10-17T20:38:00.002219627Z","level":"INFO","msg":"request","method":"POST","endpoint":"/products/:productId/details","path":"/products/1/details","status":204,"duration_ms":0.062}
+{"time":"2026-10-17T20:38:00.01321821Z","level":"WARN","msg":"request","method":"GET","endpoint":"/products/:productId","path":"/products/999","status":404,"duration_ms":0.051}
+{"time":"2026-10-17T20:38:00.007626585Z","level":"ERROR","msg":"panic","error":"forced error for testing"}
+{"time":"2026-10-17T20:38:00.007693044Z","level":"ERROR","msg":"request","method":"GET","endpoint":"/products/:productId","path":"/products/1","status":500,"duration_ms":0.075}
+```
+
+Counting the log lines of the same 5-minute run gives the same picture as the dashboard: 469,182 requests (about 1,590 per second), 79.9 % `200`, 10.0 % `204`, 8.0 % `404` and 2.0 % `500`, so 10.1 % errors overall.
+
 ## Clean up
 
 Remove everything when you are finished, so that no resources keep running:

@@ -36,3 +36,47 @@ class ProductFastHttpUser(FastHttpUser):
 # set by StepLoadShape in shape_step.py, not by -u/-r.
 class ProductStressUser(FastHttpUser):
     tasks = [ProductTasks]
+
+
+# Part V (observability): a mix that includes a few expected errors, so the
+# error panel in Grafana and the WARN/ERROR lines in the logs have something to
+# show. Only used against the local docker-compose stack.
+#   80% GET existing product -> 200
+#   10% POST valid update    -> 204
+#    8% GET missing product  -> 404 (expected)
+#    2% GET with X-Force-Error: true -> 500 (expected, test hook)
+class ObservabilityTasks(TaskSet):
+
+    @task(80)
+    def get_product(self):
+        ProductTasks.get_product(self)
+
+    @task(10)
+    def post_product_details(self):
+        ProductTasks.post_product_details(self)
+
+    # catch_response lets us mark an expected 4xx/5xx as a success, so Locust
+    # does not count these deliberate errors as failures.
+    @task(8)
+    def get_missing_product(self):
+        with self.client.get("/products/999", name="GET productById (missing)",
+                             catch_response=True) as response:
+            if response.status_code == 404:
+                response.success()
+            else:
+                response.failure(f"expected 404, got {response.status_code}")
+
+    @task(2)
+    def get_forced_error(self):
+        with self.client.get("/products/1", headers={"X-Force-Error": "true"},
+                             name="GET productById (forced 500)",
+                             catch_response=True) as response:
+            if response.status_code == 500:
+                response.success()
+            else:
+                response.failure(f"expected 500, got {response.status_code}")
+
+
+class ProductObservabilityUser(FastHttpUser):
+    wait_time = between(0.05, 0.2)
+    tasks = [ObservabilityTasks]

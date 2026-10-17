@@ -6,7 +6,7 @@ WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
 
-COPY product-service.go ./
+COPY *.go ./
 # CGO off gives a static binary that runs on a minimal image; -s -w strips debug info.
 RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o /product-api .
 
@@ -16,6 +16,8 @@ FROM --platform=linux/amd64 alpine:3.22
 RUN adduser -D -u 10001 app
 USER app
 COPY --from=build /product-api /product-api
+
+ENV GIN_MODE=release
 
 # The server listens on :8080 (see main in product-service.go).
 EXPOSE 8080

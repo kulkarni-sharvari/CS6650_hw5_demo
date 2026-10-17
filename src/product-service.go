@@ -202,7 +202,7 @@ func recoverMiddleware() gin.HandlerFunc {
 		defer func() {
 			if rec := recover(); rec != nil {
 				// Log the cause on the server; send the client a generic message.
-				log.Printf("panic: %v", rec)
+				logger.Error("panic", "error", rec)
 				writeError(c, http.StatusInternalServerError, errInternal,
 					"Internal server error", "An unexpected error occurred")
 				c.Abort()
@@ -221,10 +221,13 @@ func main() {
 	store := NewProductStore()
 	seedProducts(store)
 
-	// gin.New() has no middleware; gin.Default() would add its own recovery.
+	// gin.New() has no middleware; gin.Default() would add its own logger and
+	// recovery. observabilityMiddleware goes first so it also sees the 500 that
+	// recoverMiddleware produces after a panic.
 	router := gin.New()
-	router.Use(gin.Logger(), recoverMiddleware())
+	router.Use(observabilityMiddleware(), recoverMiddleware())
 
+	router.GET("/metrics", metricsHandler())
 	router.GET("/products/:productId", store.getProduct)
 	router.POST("/products/:productId/details", store.postProductDetails)
 
