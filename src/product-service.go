@@ -37,25 +37,25 @@ type APIErrResponse struct {
 // ProductStore keeps products in memory, keyed by product ID. The mutex guards
 // products and nextID, because Gin serves each request in its own goroutine.
 type ProductStore struct {
-	mu       sync.RWMutex
-	products map[int64]Product
+	// mu       sync.RWMutex
+	products sync.Map
 	nextID   int64 // next ID. starts at 1
 }
 
 // NewProductStore returns an empty store. The map must be created here otherwise  writing to a nil map panics.
 func NewProductStore() *ProductStore {
 	return &ProductStore{
-		products: make(map[int64]Product),
+		products: sync.Map{}, // HW5:  make(map[int64]Product)
 		nextID:   1,
 	}
 }
 
 // Get returns the product with the given ID. The bool is false if it doesn't exist.
-func (s *ProductStore) Get(id int64) (Product, bool) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
+func (s *ProductStore) Get(id int64) (any, bool) {
+	// HW5: s.mu.RLock()
+	// HW5: defer s.mu.RUnlock()
 
-	p, ok := s.products[id]
+	p, ok := s.products.Load(id) //HW5: s.products[id]
 
 	return p, ok
 }
@@ -63,11 +63,12 @@ func (s *ProductStore) Get(id int64) (Product, bool) {
 // Add assigns the next ID to newProduct, stores it, and returns the stored copy.
 // Only seedProducts calls it: no endpoint creates products.
 func (s *ProductStore) Add(newProduct Product) Product {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	// HW5: s.mu.Lock()
+	// HW5: defer s.mu.Unlock()
 
 	newProduct.ProductID = s.nextID
-	s.products[s.nextID] = newProduct
+	s.products.Store(s.nextID, newProduct)
+	// HW5: s.products[s.nextID] = newProduct
 	s.nextID++
 
 	return newProduct
@@ -76,14 +77,14 @@ func (s *ProductStore) Add(newProduct Product) Product {
 // Update replaces an existing product. It returns false, changing nothing, if
 // productID is not in the store.
 func (s *ProductStore) Update(productID int64, newProduct Product) (Product, bool) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if _, ok := s.products[productID]; !ok {
+	// HW5: s.mu.Lock()
+	// HW5: defer s.mu.Unlock()
+	if _, ok := s.products.Load(productID); !ok {
 		return Product{}, false
 	}
 
 	newProduct.ProductID = productID
-	s.products[productID] = newProduct
+	s.products.Store(productID, newProduct)
 	return newProduct, true
 }
 
