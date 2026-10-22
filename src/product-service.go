@@ -5,7 +5,9 @@ import (
 	"log"
 	"net/http"
 	"strconv"
+	"strings"
 	"sync"
+	"sync/atomic"
 
 	"github.com/gin-gonic/gin"
 )
@@ -23,8 +25,8 @@ type Product struct {
 	SKU          string `json:"sku"`
 	Manufacturer string `json:"manufacturer"`
 	CategoryID   int32  `json:"category_id"`
-	Weight       int32  `json:"weight"`
-	SomeOtherID  int32  `json:"some_other_id"`
+	Weight       int32 `json:"weight"`
+	SomeOtherID  int32 `json:"some_other_id"`
 }
 
 // APIErrResponse is the JSON body for every error, matching the Error schema in api.yaml.
@@ -34,72 +36,78 @@ type APIErrResponse struct {
 	Details string `json:"details"`
 }
 
+type SearchResponse struct {
+	Products   []Product `json:"products"`
+	TotalCount int       `json:"total_count"`
+	SearchTime float64   `json:"search_time"` // time in milliseconds
+}
+
+var categoryNamesMap = map[int32]string{
+        1: "electronics",
+        2: "clothing",
+        3: "books",
+        4:  "home",
+        5: "toys",
+}
+
 // ProductStore keeps products in memory, keyed by product ID. The mutex guards
 // products and nextID, because Gin serves each request in its own goroutine.
 type ProductStore struct {
-	// mu       sync.RWMutex
 	products sync.Map
-	nextID   int64 // next ID. starts at 1
+	nextID   atomic.Int64 // next ID. starts at 1
 }
 
 // NewProductStore returns an empty store. The map must be created here otherwise  writing to a nil map panics.
 func NewProductStore() *ProductStore {
-	return &ProductStore{
-		products: sync.Map{}, // HW5:  make(map[int64]Product)
-		nextID:   1,
-	}
+	return &ProductStore{}
 }
 
 // Get returns the product with the given ID. The bool is false if it doesn't exist.
-func (s *ProductStore) Get(id int64) (any, bool) {
-	// HW5: s.mu.RLock()
-	// HW5: defer s.mu.RUnlock()
-
-	p, ok := s.products.Load(id) //HW5: s.products[id]
-
-	return p, ok
+func (s *ProductStore) Get(id int64) (Product, bool) {
+	v, ok := s.products.Load(id)
+	if !ok {
+		return Product{}, false
+	}
+	return v.(Product), true
 }
 
 // Add assigns the next ID to newProduct, stores it, and returns the stored copy.
 // Only seedProducts calls it: no endpoint creates products.
 func (s *ProductStore) Add(newProduct Product) Product {
-	// HW5: s.mu.Lock()
-	// HW5: defer s.mu.Unlock()
-
-	newProduct.ProductID = s.nextID
-	s.products.Store(s.nextID, newProduct)
-	// HW5: s.products[s.nextID] = newProduct
-	s.nextID++
-
+	newProduct.ProductID = s.nextID.Add(1)
+	s.products.Store(newProduct.ProductID, newProduct)
 	return newProduct
 }
 
 // Update replaces an existing product. It returns false, changing nothing, if
 // productID is not in the store.
 func (s *ProductStore) Update(productID int64, newProduct Product) (Product, bool) {
-	// HW5: s.mu.Lock()
-	// HW5: defer s.mu.Unlock()
-	if _, ok := s.products.Load(productID); !ok {
+	oldProduct, ok := s.products.Load(productID)
+	if !ok {
 		return Product{}, false
 	}
 
 	newProduct.ProductID = productID
-	s.products.Store(productID, newProduct)
+	if !s.products.CompareAndSwap(productID, oldProduct, newProduct) {
+		return Product{}, false
+	}
 	return newProduct, true
 }
 
-// seedProducts preloads the store. POST only updates existing products, so
-// there must be some to update. To add another, add one line to the slice.
-func seedProducts(store *ProductStore) {
-	seed := []Product{
-		{SKU: "ABC-123-XYZ", Manufacturer: "Acme Corporation", CategoryID: 1, Weight: 500, SomeOtherID: 101},
-		{SKU: "DEF-456-UVW", Manufacturer: "Globex", CategoryID: 2, Weight: 1250, SomeOtherID: 102},
-		{SKU: "GHI-789-RST", Manufacturer: "Initech", CategoryID: 1, Weight: 300, SomeOtherID: 103},
+func (s *ProductStore) FindAll(query string, offset int64) []Product {
+	var products []Product
+	query = strings.ToLower(query)
+	// query can be product name (SKU) or category name (derived from category ID)
+	for count := int64(1); count <= 100; count++ {
+		v, ok := s.products.Load(offset + count)
+		if ok {
+			prod := v.(Product)
+			if strings.Contains(strings.ToLower(prod.SKU), query) || strings.Contains(categoryNamesMap[prod.CategoryID],query) {
+				products = append(products, prod)
+			}
+		}
 	}
-
-	for _, p := range seed {
-		store.Add(p)
-	}
+	return products
 }
 
 // ---- Handlers and helpers ----
@@ -162,6 +170,33 @@ func (s *ProductStore) postProductDetails(c *gin.Context) {
 	}
 	// 204 must not have a body, so set only the status instead of calling c.JSON.
 	c.Status(http.StatusNoContent)
+}
+
+func (s *ProductStore) findProducts(c *gin.Context) {
+	query := strings.TrimSpace(c.Query("q"))
+	if query == "" {
+		writeError(c, http.StatusBadRequest, errInvalidInput, "The provided input data is invalid", "the query param can't be empty")
+		return
+	}
+
+	offset, err := strconv.ParseInt(c.DefaultQuery("offset", "0"), 10, 64)
+	if err != nil {
+		offset = 0
+	}
+	if offset < 0 {
+		offset = 0
+	}
+	if offset > 99900 {
+		offset = 99900
+	}
+
+	// find all products whose name or category contain the query string
+	products := s.FindAll(query, offset)
+	if len(products) > 0 {
+		c.JSON(http.StatusOK, products)
+	} else {
+		c.JSON(http.StatusNotFound, fmt.Sprintf("There is no product whose categoryId or SKU is %s", query))
+	}
 }
 
 // validateProduct checks the request body against the Product schema in
@@ -231,6 +266,7 @@ func main() {
 	router.GET("/metrics", metricsHandler())
 	router.GET("/products/:productId", store.getProduct)
 	router.POST("/products/:productId/details", store.postProductDetails)
+	router.GET("/products/search", store.findProducts)
 
 	log.Fatal(router.Run(":8080"))
 }
