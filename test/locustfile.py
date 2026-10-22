@@ -6,6 +6,7 @@ PRODUCT_COUNT = 100_000
 # Mirrors the seed data in src/seed.go: keep in sync if brands or categories change.
 SEED_BRANDS = ["Alpha", "Bravo", "Charlie", "Delta", "Echo", "Foxtrot", "Golf", "Hotel"]
 SEED_CATEGORIES = 5  # category_id runs 1..5
+SEARCH_TERMS = ["electro", "books", "toys", "alpha", "delta", "product"]
 
 class ProductTasks(TaskSet):
     
@@ -89,3 +90,9 @@ class ObservabilityTasks(TaskSet):
 class ProductObservabilityUser(FastHttpUser):
     wait_time = between(0.05, 0.2)
     tasks = [ObservabilityTasks]
+
+class  ProductSearchUser(FastHttpUser):
+    @task
+    def find_products(self):
+        q = random.choice(SEARCH_TERMS)
+        self.client.get(f"/products/search?q={q}", name="GET search")
