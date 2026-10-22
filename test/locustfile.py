@@ -1,22 +1,31 @@
 import random
 from locust import HttpUser, FastHttpUser, task, between, TaskSet
 
+PRODUCT_COUNT = 100_000
+
+# Mirrors the seed data in src/seed.go: keep in sync if brands or categories change.
+SEED_BRANDS = ["Alpha", "Bravo", "Charlie", "Delta", "Echo", "Foxtrot", "Golf", "Hotel"]
+SEED_CATEGORIES = 5  # category_id runs 1..5
+
 class ProductTasks(TaskSet):
     
     @task(9)
     def get_product(self):
-        product_id = random.choice([1,2,3])
+        product_id = random.randint(1, PRODUCT_COUNT)
         self.client.get(f"/products/{product_id}", name="GET productById")
     
     @task(1)
     def post_product_details(self):
-        product_id = random.choice([1,2,3])
-        cat_id = random.randrange(1,100,1)
+        product_id = random.randint(1, PRODUCT_COUNT)
         some_other_id = random.randrange(1,100,1)
+        # sku, manufacturer and category_id are what search matches on, so write
+        # back the values the server seeded (see seedProducts in src/seed.go).
+        # Only weight and some_other_id change, so POSTs never alter search results.
+        brand = SEED_BRANDS[product_id % len(SEED_BRANDS)]
         payload = {
-            "sku": f"SKU-{product_id}-ABC",
-            "manufacturer": "Manufacturer A",
-            "category_id": cat_id,
+            "sku": f"Product {brand} {product_id}",
+            "manufacturer": brand,
+            "category_id": product_id % SEED_CATEGORIES + 1,
             "weight": 50,
             "some_other_id": some_other_id
         }
@@ -59,7 +68,7 @@ class ObservabilityTasks(TaskSet):
     # does not count these deliberate errors as failures.
     @task(8)
     def get_missing_product(self):
-        with self.client.get("/products/999", name="GET productById (missing)",
+        with self.client.get("/products/100001", name="GET productById (missing)",
                              catch_response=True) as response:
             if response.status_code == 404:
                 response.success()

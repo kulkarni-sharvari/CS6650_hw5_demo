@@ -12,8 +12,6 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
-
-
 // The RED signals for every endpoint: Rate, Errors, Duration.
 
 var (
