@@ -10,3 +10,5 @@ result/
 
 # macOS
 .DS_Store
+
+*/terraform.tfvarssrc/aws-targets/targets.json
