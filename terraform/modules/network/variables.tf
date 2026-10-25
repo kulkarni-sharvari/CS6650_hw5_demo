@@ -11,3 +11,13 @@ variable "cidr_blocks" {
   type        = list(string)
   default     = ["0.0.0.0/0"]
 }
+
+variable "alb_security_group_id" {
+  description = "Allow inbound only by ALB SG"
+  type        = string
+}
+
+variable "my_ip_cidr" {
+  type        = string
+  description = "My public IP. allowed to reach port 8080 on the tasks for Prometheus scraping"
+}

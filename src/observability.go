@@ -47,9 +47,10 @@ var logger = slog.New(slog.NewJSONHandler(os.Stdout, nil))
 // is already 500, so failed requests are counted too.
 func observabilityMiddleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
-		// Prometheus scrapes /metrics every few seconds. Leave it out so that it
-		// does not distort the numbers or fill the logs.
-		if c.Request.URL.Path == "/metrics" {
+		// Prometheus scrapes /metrics every few seconds, and the load balancer calls
+		// /health every 30 seconds on every task. Leave both out so that they do not
+		// distort the numbers or fill the logs.
+		if path := c.Request.URL.Path; path == "/metrics" || path == "/health" {
 			c.Next()
 			return
 		}

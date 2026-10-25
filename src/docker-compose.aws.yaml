@@ -1,0 +1,24 @@
+# The Homework 5 monitoring stack (same images and data source file), pointed at the ECS tasks
+# on AWS. The dashboard panels are built by hand in Grafana, as in HW5.
+# Run it on its own, not together with docker-compose.yaml (both use ports 9090 and 3000):
+#   docker compose -p hw6aws -f docker-compose.aws.yaml up -d
+services:
+  prometheus:
+    image: prom/prometheus:v2.53.0
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./prometheus-aws.yaml:/etc/prometheus/prometheus.yml
+      - ./aws-targets:/etc/prometheus/targets
+
+  grafana:
+    image: grafana/grafana:11.1.0
+    ports:
+      - "3000:3000"
+    environment:
+      - GF_AUTH_ANONYMOUS_ENABLED=true     # view the dashboard without logging in
+      - GF_AUTH_ANONYMOUS_ORG_ROLE=Viewer
+    volumes:
+      - ./grafana.yml:/etc/grafana/provisioning/datasources/datasource.yaml   # same data source file as HW5
+    depends_on:
+      - prometheus

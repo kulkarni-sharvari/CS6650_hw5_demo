@@ -18,11 +18,18 @@ resource "aws_security_group" "this" {
   vpc_id      = data.aws_vpc.default.id
 
   ingress {
+    from_port       = var.container_port
+    to_port         = var.container_port
+    protocol        = "tcp"
+    security_groups = [var.alb_security_group_id]
+    description     = "Allow HTTP traffic"
+  }
+
+  ingress {
     from_port   = var.container_port
     to_port     = var.container_port
     protocol    = "tcp"
-    cidr_blocks = var.cidr_blocks
-    description = "Allow HTTP traffic"
+    cidr_blocks = [var.my_ip_cidr]
   }
 
   egress {

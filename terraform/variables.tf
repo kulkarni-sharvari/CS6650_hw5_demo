@@ -22,11 +22,22 @@ variable "container_port" {
 
 variable "ecs_count" {
   type    = number
-  default = 1
+  default = 2 # the auto scaling minimum
 }
 
 # How long to keep logs
 variable "log_retention_days" {
   type    = number
   default = 7
+}
+
+variable "my_ip_cidr" {
+  type        = string
+  description = "My public IP. allowed to reach port 8080 on the tasks for Prometheus scraping"
+}
+
+variable "target_cpu" {
+  type        = number
+  default     = 70
+  description = "Average CPU % the auto scaler tries to hold. Change it with: terraform apply -var target_cpu=50"
 }

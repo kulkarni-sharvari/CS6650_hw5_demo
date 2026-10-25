@@ -60,3 +60,8 @@ variable "memory" {
   default     = "512"
   description = "Memory (MiB)"
 }
+
+variable "target_group_arn" {
+  type        = string
+  description = "ARN of the ALB target group the service registers its tasks with"
+}

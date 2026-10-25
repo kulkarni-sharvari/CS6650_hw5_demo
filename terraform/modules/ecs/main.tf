@@ -1,6 +1,12 @@
 # ECS Cluster
 resource "aws_ecs_cluster" "this" {
   name = "${var.service_name}-cluster"
+
+  # Publishes desired and running task counts (and more) to CloudWatch.
+  setting {
+    name  = "containerInsights"
+    value = "enabled"
+  }
 }
 
 # Task Definition
@@ -42,9 +48,24 @@ resource "aws_ecs_service" "this" {
   desired_count   = var.ecs_count
   launch_type     = "FARGATE"
 
+  # Register every task with the ALB target group.
+  load_balancer {
+    target_group_arn = var.target_group_arn
+    container_name   = "${var.service_name}-container" # must match the name in container_definitions
+    container_port   = var.container_port
+  }
+
+  # Give a new task time to start before health check failures count against it.
+  health_check_grace_period_seconds = 60
+
   network_configuration {
-    subnets         = var.subnet_ids
-    security_groups = var.security_group_ids
+    subnets          = var.subnet_ids
+    security_groups  = var.security_group_ids
     assign_public_ip = true
+  }
+
+  # The auto scaler owns the task count, so Terraform must not reset it.
+  lifecycle {
+    ignore_changes = [desired_count]
   }
 }

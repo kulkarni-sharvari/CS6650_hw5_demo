@@ -1,0 +1,10 @@
+# Prometheus for the AWS run: scrape every running ECS task, not the load balancer.
+# The target list is written by refresh_aws_targets.sh and re-read every 15 seconds.
+global:
+  scrape_interval: 5s
+
+scrape_configs:
+  - job_name: "product-api-aws"
+    file_sd_configs:
+      - files: ["/etc/prometheus/targets/targets.json"]
+        refresh_interval: 15s

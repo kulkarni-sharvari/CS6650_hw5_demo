@@ -6,7 +6,7 @@ Terraform builds the Docker image, pushes it to Amazon ECR, and runs it on Amazo
 
 The homework report (API specification, local and Docker test results, and deployment notes with screenshots) is in the course repository: [NU-CS6650/hw5/report.md](https://github.com/kulkarni-sharvari/NU-CS6650/blob/main/hw5/report.md).
 
-Homework 6 adds a **product search endpoint** (`GET /products/search?q=...`), a `sync.Map` store with 100,000 generated products, and a load-test analysis on a single Fargate task. See [HW6: Product search](#hw6-product-search-and-scaling) below and the report: [NU-CS6650/hw6/report.md](https://github.com/kulkarni-sharvari/NU-CS6650/blob/main/hw6/report.md).
+Homework 6 adds a **product search endpoint** (`GET /products/search?q=...`), a `sync.Map` store with 100,000 generated products, and a load-test analysis on a single Fargate task. See [HW6: Product search](#hw6-product-search-and-scaling) and [HW6 Part III: Horizontal scaling](#hw6-part-iii-horizontal-scaling-with-auto-scaling) below, and the report: [NU-CS6650/hw6/report.md](https://github.com/kulkarni-sharvari/NU-CS6650/blob/main/hw6/report.md).
 
 ## Repository layout
 
@@ -21,7 +21,12 @@ Homework 6 adds a **product search endpoint** (`GET /products/search?q=...`), a 
 | `terraform/modules/network` | Default VPC subnets and a security group that opens the container port |
 | `terraform/modules/ecr` | The ECR repository that stores the image |
 | `terraform/modules/logging` | The CloudWatch log group (`/ecs/CS6650L2`) |
-| `terraform/modules/ecs` | The ECS cluster, Fargate task definition and service |
+| `terraform/modules/ecs` | The ECS cluster, Fargate task definition and service (HW6: registered with the load balancer, Container Insights on) |
+| `terraform/modules/alb` | HW6 Part III: the Application Load Balancer, its listener and security group, and the target group |
+| `terraform/modules/autoscaling` | HW6 Part III: the auto scaling target (min 2, max 4) and the CPU target tracking policy |
+| `terraform/modules/monitoring` | HW6 Part III: the CloudWatch dashboard |
+| `src/refresh_aws_targets.sh`, `src/prometheus-aws.yaml`, `src/docker-compose.aws.yaml` | HW6 Part III: Prometheus and Grafana scraping every running task |
+| `test/shape_spike.py` | HW6 Part III: the spike load shape (5 users, then 100) |
 | `images/` | Screenshots of the deployed API (referenced below) |
 
 ## Prerequisites
@@ -514,6 +519,89 @@ All runs used one Fargate task (0.25 vCPU, 512 MB) and a laptop as the load gene
 
 The full analysis, with all screenshots, is in the report: [NU-CS6650/hw6/report.md](https://github.com/kulkarni-sharvari/NU-CS6650/blob/main/hw6/report.md).
 
+## HW6 Part III: Horizontal scaling with auto scaling
+
+Part III runs the same search service behind an **Application Load Balancer** with **auto scaling**, to remove the bottleneck found in Part II. The only code change is `GET /health` (returns `200 {"status":"ok"}`), which the load balancer's health check calls. The metrics middleware skips it, like `/metrics`.
+
+```
+Locust ──:80──► ALB listener ──► target group (IP targets, health check /health) ──:8080──► ECS tasks (0.25 vCPU each)
+                                                                                         
+                       CloudWatch alarm: average CPU > 70 % for 3 one-minute datapoints ─┘ auto scaling: 2 to 4 tasks
+```
+
+| Piece | Settings |
+|--|--|
+| Load balancer | Internet-facing, listener HTTP port 80 forwards to the target group (the ALB's security group allows port 80 from anywhere) |
+| Target group | Target type `ip`, HTTP, port 8080, health check **`/health`**, interval **30 s**, healthy threshold **2**, unhealthy threshold 3, deregistration delay 30 s |
+| ECS service | Fargate, **256 CPU units and 512 MB** per task, starts with **2** tasks; the task security group accepts port 8080 only from the load balancer's security group (and from `my_ip_cidr`, for Prometheus) |
+| Auto scaling | Target tracking on average CPU, target **70 %**, **min 2, max 4**, scale-out and scale-in cooldown **300 s** |
+| Monitoring | CloudWatch dashboard `CS6650L2-scaling` (CPU and memory, desired vs running tasks, healthy targets, ALB requests, response time, 5XX), plus the Homework 5 Prometheus and Grafana stack scraping every task |
+
+### Deploy
+
+Set your public IP once (it opens port 8080 on the tasks to you, for Prometheus), then apply as in the sections above:
+
+```bash
+cd terraform
+terraform init                        # needed again whenever a module is added
+terraform apply
+terraform output alb_dns_name         # the host for the load tests
+curl "http://$(terraform output -raw alb_dns_name)/health"
+```
+
+To change the scaling target without editing code: `terraform apply -var target_cpu=50`.
+
+### Watch the tasks with the Homework 5 dashboards
+
+The load balancer hides which task answers, and Prometheus cannot scrape it (each scrape would reach a random task). `src/refresh_aws_targets.sh` writes the public IP of every running task to `src/aws-targets/targets.json` every 15 seconds, and Prometheus (`src/prometheus-aws.yaml`) scrapes each task directly.
+
+```bash
+cd src
+docker compose -p hw6aws -f docker-compose.aws.yaml up -d     # Prometheus :9090 and Grafana :3000 (do not run it together with docker-compose.yaml)
+./refresh_aws_targets.sh                                       # leave it running in its own terminal (needs AWS credentials)
+```
+
+Open Grafana at `http://localhost:3000` and build the panels. I used the same queries from Homework. Stop with `docker compose -p hw6aws -f docker-compose.aws.yaml down`.
+
+### Load tests
+
+Use the load balancer's address.
+
+**Core Test:** the 60 users that saturated one task in Part II, for 12 minutes (auto scaling needs minutes to react)
+
+```bash
+locust -f test/locustfile.py --host http://<ALB-DNS> -u 60 -r 20 -t 12m --autostart --autoquit 600 \
+  --csv results/p3_core --csv-full-history --html results/p3_core.html ProductSearchUser
+```
+
+**Spike Test:** 5 users for 3 minutes, then 100 users for 10 minutes (the shape sets the users)
+```
+locust -f test/locustfile.py,test/shape_spike.py --host http://<ALB-DNS> --processes 2 --autostart --autoquit 600 \
+  --csv results/p3_exp2_spike --html results/p3_exp2_spike.html ProductSearchUser
+```
+
+The **resilience test** is the same 60-user load for 8 minutes, with one task stopped by hand in the ECS console after about 2 minutes.
+
+### Results
+
+| | Part II: 1 task | Core Test: 2 to 3 tasks | Spike: 2 to 3 tasks | Target 50 %: 2 to 4 tasks | Resilience: 1 task stopped |
+|--|--|--|--|--|--|
+| Users | 60 | 60 | 5, then 100 | 60 | 60 |
+| Requests / failures | 270,158 / 0 | 1,311,360 / **0** | 1,519,737 / **0** | 1,445,479 / **0** | 833,014 / **0** |
+| Throughput (average) | 1,501 req/s | 1,821 req/s | 1,946 req/s | 2,008 req/s | 1,736 req/s |
+| Median / p95 / p99 | 27 / 96 / 180 ms | 24 / 92 / 160 ms | 26 / 100 / 200 ms | 23 / 67 / 150 ms | 25 / 95 / 180 ms |
+| Alarm after the load changed | n/a | 6 min 18 s | 6 min 44 s after the spike | 5 min 20 s | n/a |
+
+* The **third task took traffic about 40 seconds after the alarm**, and the load balancer split the requests exactly in half between the two original tasks (316,367 each in the first 6 minutes).
+* **Scale-in is slow:** the service stayed at 3 tasks for 17 min 45 s after the load ended (the alarm needs 15 minutes below 63 % CPU).
+* **A stopped task caused no failed request**: the target group drained it, the surviving task took the load, and full capacity was back about 70 to 90 seconds later. The ALB recorded 0 `5XX` responses in every run.
+* **CPU metrics arrive about 2 minutes late**, so the scale-out alarm sometimes fired after a load had already ended (03:32:58 and 04:05:58 UTC, 2 to 3 minutes later).
+* **The 60-user load is limited by the laptop's 23 ms round trip** (at most about 2,500 req/s), so these runs show that the service is no longer the limit, not its full capacity.
+
+![Dashboard over the Core Test: CPU against the 70 % target, tasks, healthy targets](./images/hw6/part3/p3_08_dashboard_cpu_memory_tasks_targets.png)
+
+The full write-up (timelines, all screenshots, the spike and the lower scaling target, which metric should trigger the scaling, horizontal against vertical scaling, and the limitations) is in the report: [NU-CS6650/hw6/report.md](https://github.com/kulkarni-sharvari/NU-CS6650/blob/main/hw6/report.md).
+
 ## Clean up
 
 Remove everything when you are finished, so that no resources keep running:
@@ -522,3 +610,5 @@ Remove everything when you are finished, so that no resources keep running:
 cd terraform
 terraform destroy -auto-approve
 ```
+
+Save all screenshots first: the CloudWatch dashboard is deleted with the stack. If Container Insights was enabled, the log group `/aws/ecs/containerinsights/CS6650L2-cluster/performance` is created by AWS, not by Terraform, so delete it by hand: `aws logs delete-log-group --log-group-name /aws/ecs/containerinsights/CS6650L2-cluster/performance --region us-east-1`. Stop the local monitoring stack with `docker compose -p hw6aws -f docker-compose.aws.yaml down`.

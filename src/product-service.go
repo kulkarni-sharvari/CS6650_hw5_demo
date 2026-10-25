@@ -223,6 +223,12 @@ func (s *ProductStore) findProducts(c *gin.Context) {
 	c.JSON(http.StatusOK, SearchResponse{Products: products, TotalCount: totalCount, SearchTime: searchTime})
 }
 
+// healthHandler handles GET /health, the health check path of the load balancer's
+// target group. It answers 200 as long as the process is up and serving requests.
+func healthHandler(c *gin.Context) {
+	c.JSON(http.StatusOK, gin.H{"status": "ok"})
+}
+
 // validateProduct checks the request body against the Product schema in
 // api.yaml. It returns a description of the first problem, or "" if valid.
 func validateProduct(p Product) string {
@@ -288,6 +294,7 @@ func main() {
 	router.Use(observabilityMiddleware(), recoverMiddleware())
 
 	router.GET("/metrics", metricsHandler())
+	router.GET("/health", healthHandler)
 	router.GET("/products/:productId", store.getProduct)
 	router.POST("/products/:productId/details", store.postProductDetails)
 	router.GET("/products/search", store.findProducts)
